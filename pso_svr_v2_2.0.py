@@ -8,6 +8,8 @@ import joblib
 import os
 from datetime import datetime
 import warnings
+import pandas as pd
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
@@ -32,9 +34,15 @@ def generate_wave_data(n_samples=1000):
     # 构建输入特征（时间序列滞后特征）
     X = []
     y = []
-    feature_names = []  # 特征名称列表
 
     # 定义特征名称
+    feature_names = [
+        'wind_speed_t-3', 'wind_speed_t-2', 'wind_speed_t-1',
+        'wave_height_t-3', 'wave_height_t-2', 'wave_height_t-1',
+        'wave_period_t-2', 'wave_period_t-1',
+        'wind_dir_cos_t'
+    ]
+
     for i in range(3, n_samples):  # 前3个时刻的特征预测当前波高
         features = [
             wind_speed[i - 3], wind_speed[i - 2], wind_speed[i - 1],  # 滞后3/2/1时刻风速
@@ -44,15 +52,6 @@ def generate_wave_data(n_samples=1000):
         ]
         X.append(features)
         y.append(sig_wave_height[i])
-
-    # 创建特征名称（只在第一次迭代时）
-    if not feature_names:
-        feature_names = [
-            'wind_speed_t-3', 'wind_speed_t-2', 'wind_speed_t-1',
-            'wave_height_t-3', 'wave_height_t-2', 'wave_height_t-1',
-            'wave_period_t-2', 'wave_period_t-1',
-            'wind_dir_cos_t'
-        ]
 
     # 转换为数组并过滤NaN（双重保险）
     X = np.array(X)
@@ -189,7 +188,7 @@ class PSO_SVR:
 
 
 # -------------------------- 3. 特征重要性分析 --------------------------
-def analyze_feature_importance(model, X_test, y_test, feature_names):
+def analyze_feature_importance(model, X_test, y_test, feature_names, save_dir=None):
     """
     使用排列特征重要性分析
     通过打乱每个特征的值，观察模型性能下降程度来衡量特征重要性
@@ -228,30 +227,194 @@ def analyze_feature_importance(model, X_test, y_test, feature_names):
     importance_scores.sort(key=lambda x: x[1], reverse=True)
 
     # 可视化特征重要性
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     features = [score[0] for score in importance_scores]
     scores = [score[1] for score in importance_scores]
 
-    bars = ax.barh(range(len(features)), scores, color='skyblue')
+    colors = plt.cm.viridis(np.linspace(0, 1, len(features)))
+    bars = ax.barh(range(len(features)), scores, color=colors)
     ax.set_yticks(range(len(features)))
-    ax.set_yticklabels(features)
-    ax.set_xlabel('重要性分数（RMSE增加量）')
-    ax.set_title('特征重要性分析')
+    ax.set_yticklabels(features, fontsize=10)
+    ax.set_xlabel('重要性分数（RMSE增加量）', fontsize=12)
+    ax.set_title('特征重要性分析', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
 
     # 在条形图上添加数值标签
     for i, (bar, score) in enumerate(zip(bars, scores)):
         width = bar.get_width()
         ax.text(width + 0.001, bar.get_y() + bar.get_height() / 2,
-                f'{score:.4f}', ha='left', va='center')
+                f'{score:.4f}', ha='left', va='center', fontsize=10)
 
     plt.tight_layout()
+
+    # 保存图像
+    if save_dir:
+        save_path = os.path.join(save_dir, 'feature_importance.png')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"特征重要性图已保存到: {save_path}")
+
     plt.show()
 
     return importance_scores
 
 
-# -------------------------- 4. 模型保存和加载功能 --------------------------
-def save_model(model, scaler_X, scaler_y, best_params, feature_names, save_dir='saved_models'):
+# -------------------------- 4. 波形可视化与保存功能 --------------------------
+def visualize_wave_predictions(y_true, y_pred, save_dir=None, title="波浪预测波形图",
+                               sample_size=200, show_waveform=True):
+    """
+    可视化并保存波浪预测波形图
+
+    参数:
+    - y_true: 真实值数组
+    - y_pred: 预测值数组
+    - save_dir: 保存目录
+    - title: 图表标题
+    - sample_size: 显示的样本数量
+    - show_waveform: 是否显示波形图
+    """
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+
+    # 确保样本数量不超过数据长度
+    sample_size = min(sample_size, len(y_true))
+
+    # 创建图形
+    fig, axes = plt.subplots(3, 1, figsize=(15, 12))
+
+    # 1. 完整测试集预测对比
+    x_full = np.arange(len(y_true))
+    axes[0].plot(x_full, y_true, label='真实波浪高度', color='blue', linewidth=1.5, alpha=0.8)
+    axes[0].plot(x_full, y_pred, label='预测波浪高度', color='red', linewidth=1.5, alpha=0.7, linestyle='--')
+    axes[0].set_xlabel('样本索引', fontsize=11)
+    axes[0].set_ylabel('波高 (m)', fontsize=11)
+    axes[0].set_title('完整测试集波浪预测对比', fontsize=13, fontweight='bold')
+    axes[0].legend(loc='upper right')
+    axes[0].grid(True, alpha=0.3)
+
+    # 2. 局部波形对比（前sample_size个样本）
+    x_sample = np.arange(sample_size)
+    axes[1].plot(x_sample, y_true[:sample_size], label='真实波形', color='green',
+                 linewidth=2, alpha=0.9, marker='o', markersize=3, markevery=10)
+    axes[1].plot(x_sample, y_pred[:sample_size], label='预测波形', color='orange',
+                 linewidth=2, alpha=0.8, linestyle='--', marker='s', markersize=3, markevery=10)
+    axes[1].fill_between(x_sample, y_true[:sample_size], y_pred[:sample_size],
+                         alpha=0.2, color='gray', label='误差区域')
+    axes[1].set_xlabel('样本索引', fontsize=11)
+    axes[1].set_ylabel('波高 (m)', fontsize=11)
+    axes[1].set_title(f'前{sample_size}个样本波浪波形对比', fontsize=13, fontweight='bold')
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+
+    # 添加误差统计
+    mae = mean_absolute_error(y_true[:sample_size], y_pred[:sample_size])
+    rmse = np.sqrt(mean_squared_error(y_true[:sample_size], y_pred[:sample_size]))
+    axes[1].text(0.02, 0.98, f'MAE: {mae:.3f}m\nRMSE: {rmse:.3f}m',
+                 transform=axes[1].transAxes, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+    # 3. 残差分布图
+    residuals = y_true - y_pred
+    axes[2].scatter(np.arange(len(residuals)), residuals, alpha=0.6, color='purple', s=20)
+    axes[2].axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2)
+    axes[2].fill_between(x_full, -rmse, rmse, alpha=0.2, color='gray', label=f'±RMSE ({rmse:.3f}m)')
+    axes[2].set_xlabel('样本索引', fontsize=11)
+    axes[2].set_ylabel('残差 (m)', fontsize=11)
+    axes[2].set_title('预测残差分布', fontsize=13, fontweight='bold')
+    axes[2].legend(loc='upper right')
+    axes[2].grid(True, alpha=0.3)
+
+    # 添加残差统计信息
+    residual_mean = np.mean(residuals)
+    residual_std = np.std(residuals)
+    axes[2].text(0.02, 0.98, f'残差均值: {residual_mean:.4f}m\n残差标准差: {residual_std:.4f}m',
+                 transform=axes[2].transAxes, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+    plt.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
+    plt.tight_layout()
+
+    # 保存图像
+    if save_dir:
+        # 确保保存目录存在
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(save_dir, f'wave_prediction_{timestamp}.png')
+
+        # 保存高分辨率图像
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"\n波形图已保存到: {save_path}")
+
+        # 同时保存为PDF格式（矢量图）
+        pdf_path = os.path.join(save_dir, f'wave_prediction_{timestamp}.pdf')
+        plt.savefig(pdf_path, bbox_inches='tight')
+        print(f"波形图PDF版本已保存到: {pdf_path}")
+
+    # 显示图形
+    if show_waveform:
+        plt.show()
+    else:
+        plt.close()
+
+    return fig
+
+
+def create_waveform_animation(y_true, y_pred, save_dir=None, frames=50):
+    """
+    创建波形预测动画（可选功能）
+    """
+    try:
+        from matplotlib.animation import FuncAnimation
+        import matplotlib.animation as animation
+
+        print("\n正在生成波形预测动画...")
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.set_xlim(0, 100)
+        ax.set_ylim(min(np.min(y_true), np.min(y_pred)) - 0.5,
+                    max(np.max(y_true), np.max(y_pred)) + 0.5)
+        ax.set_xlabel('样本索引')
+        ax.set_ylabel('波高 (m)')
+        ax.set_title('波浪预测动态演示')
+        ax.grid(True, alpha=0.3)
+
+        line_true, = ax.plot([], [], 'b-', label='真实波形', linewidth=2)
+        line_pred, = ax.plot([], [], 'r--', label='预测波形', linewidth=2)
+        ax.legend()
+
+        def init():
+            line_true.set_data([], [])
+            line_pred.set_data([], [])
+            return line_true, line_pred
+
+        def update(frame):
+            x = np.arange(frame)
+            line_true.set_data(x, y_true[:frame])
+            line_pred.set_data(x, y_pred[:frame])
+            return line_true, line_pred
+
+        ani = FuncAnimation(fig, update, frames=frames, init_func=init,
+                            blit=True, interval=100)
+
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            gif_path = os.path.join(save_dir, f'wave_animation_{timestamp}.gif')
+            ani.save(gif_path, writer='pillow', fps=10)
+            print(f"动画已保存到: {gif_path}")
+
+        plt.show()
+        return ani
+
+    except ImportError:
+        print("警告: 无法生成动画，需要安装matplotlib.animation")
+        return None
+
+
+# -------------------------- 5. 模型保存和加载功能 --------------------------
+def save_model(model, scaler_X, scaler_y, best_params, feature_names,
+               performance_metrics=None, save_dir='saved_models'):
     """
     保存训练好的模型和归一化器
     """
@@ -261,18 +424,24 @@ def save_model(model, scaler_X, scaler_y, best_params, feature_names, save_dir='
 
     # 生成时间戳
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_dir = os.path.join(save_dir, f'model_{timestamp}')
+    os.makedirs(model_dir, exist_ok=True)
 
     # 保存模型
-    model_path = os.path.join(save_dir, f'pso_svr_model_{timestamp}.pkl')
+    model_path = os.path.join(model_dir, 'pso_svr_model.pkl')
     joblib.dump(model, model_path)
     print(f"模型已保存到: {model_path}")
 
     # 保存归一化器
-    scaler_X_path = os.path.join(save_dir, f'scaler_X_{timestamp}.pkl')
-    scaler_y_path = os.path.join(save_dir, f'scaler_y_{timestamp}.pkl')
+    scaler_X_path = os.path.join(model_dir, 'scaler_X.pkl')
+    scaler_y_path = os.path.join(model_dir, 'scaler_y.pkl')
     joblib.dump(scaler_X, scaler_X_path)
     joblib.dump(scaler_y, scaler_y_path)
     print(f"归一化器已保存到: {scaler_X_path}, {scaler_y_path}")
+
+    # 保存特征名称
+    feature_names_path = os.path.join(model_dir, 'feature_names.pkl')
+    joblib.dump(feature_names, feature_names_path)
 
     # 保存元数据
     metadata = {
@@ -281,12 +450,31 @@ def save_model(model, scaler_X, scaler_y, best_params, feature_names, save_dir='
         'timestamp': timestamp,
         'model_path': model_path,
         'scaler_X_path': scaler_X_path,
-        'scaler_y_path': scaler_y_path
+        'scaler_y_path': scaler_y_path,
+        'performance_metrics': performance_metrics,
+        'model_dir': model_dir
     }
 
-    metadata_path = os.path.join(save_dir, f'metadata_{timestamp}.pkl')
+    metadata_path = os.path.join(model_dir, 'metadata.pkl')
     joblib.dump(metadata, metadata_path)
     print(f"元数据已保存到: {metadata_path}")
+
+    # 保存性能指标为文本文件
+    if performance_metrics:
+        metrics_path = os.path.join(model_dir, 'performance_metrics.txt')
+        with open(metrics_path, 'w') as f:
+            f.write("模型性能指标\n")
+            f.write("=" * 50 + "\n")
+            f.write(f"生成时间: {timestamp}\n")
+            f.write(f"最优参数: {best_params}\n\n")
+
+            for set_name, metrics in performance_metrics.items():
+                f.write(f"{set_name}集评估指标:\n")
+                f.write(f"  RMSE: {metrics['rmse']:.4f} m\n")
+                f.write(f"  MAE: {metrics['mae']:.4f} m\n")
+                f.write(f"  R²: {metrics['r2']:.4f}\n\n")
+
+        print(f"性能指标已保存到: {metrics_path}")
 
     return metadata
 
@@ -305,15 +493,136 @@ def load_model(metadata_path):
 
     print(f"模型和归一化器已加载")
     print(f"模型参数: {metadata['best_params']}")
+    print(f"模型目录: {metadata.get('model_dir', 'N/A')}")
 
     return model, scaler_X, scaler_y, metadata
 
 
-# -------------------------- 5. 主流程 --------------------------
+# -------------------------- 6. 结果可视化综合函数 --------------------------
+def visualize_results(fitness_history, y_test_true, y_test_pred, pso_svr,
+                      save_dir=None, show_plots=True):
+    """
+    综合可视化所有结果并保存
+    """
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+
+    # 创建图形
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+    axes = axes.flatten()
+
+    # 子图1：PSO适应度收敛曲线
+    axes[0].plot(fitness_history, label='全局最优RMSE', color='blue', linewidth=2)
+    axes[0].axvline(x=pso_svr.best_iteration, color='red', linestyle='--',
+                    label=f'最佳迭代 ({pso_svr.best_iteration + 1})', alpha=0.7)
+    axes[0].set_xlabel('迭代次数', fontsize=11)
+    axes[0].set_ylabel('RMSE（m）', fontsize=11)
+    axes[0].set_title('PSO优化收敛曲线（带早停机制）', fontsize=13, fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    # 子图2：测试集真实值vs预测值（散点图）
+    axes[1].scatter(y_test_true, y_test_pred, alpha=0.6, color='green', s=30)
+    # 添加理想预测线
+    max_val = max(np.max(y_test_true), np.max(y_test_pred))
+    min_val = min(np.min(y_test_true), np.min(y_test_pred))
+    axes[1].plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2,
+                 label='理想预测线')
+    axes[1].set_xlabel('真实有效波高（m）', fontsize=11)
+    axes[1].set_ylabel('预测有效波高（m）', fontsize=11)
+    axes[1].set_title('真实值 vs 预测值散点图', fontsize=13, fontweight='bold')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    # 添加R²值
+    r2 = r2_score(y_test_true, y_test_pred)
+    axes[1].text(0.05, 0.95, f'R² = {r2:.4f}', transform=axes[1].transAxes,
+                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # 子图3：测试集真实值vs预测值（线图）
+    t = np.arange(len(y_test_true))
+    axes[2].plot(t, y_test_true, label='真实有效波高', color='green', linewidth=2)
+    axes[2].plot(t, y_test_pred, label='预测有效波高', color='red',
+                 linewidth=2, linestyle='--', alpha=0.8)
+    axes[2].set_xlabel('测试样本序号', fontsize=11)
+    axes[2].set_ylabel('有效波高（m）', fontsize=11)
+    axes[2].set_title('测试集真实值与预测值对比', fontsize=13, fontweight='bold')
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
+
+    # 子图4：残差分析
+    residuals = y_test_true - y_test_pred
+    axes[3].scatter(y_test_pred, residuals, alpha=0.6, color='purple', s=30)
+    axes[3].axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2)
+    axes[3].set_xlabel('预测值（m）', fontsize=11)
+    axes[3].set_ylabel('残差（真实值-预测值）', fontsize=11)
+    axes[3].set_title('残差分析图', fontsize=13, fontweight='bold')
+    axes[3].grid(True, alpha=0.3)
+
+    # 添加残差统计信息
+    residual_mean = np.mean(residuals)
+    residual_std = np.std(residuals)
+    axes[3].text(0.05, 0.95, f'残差均值: {residual_mean:.4f}m\n残差标准差: {residual_std:.4f}m',
+                 transform=axes[3].transAxes, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # 子图5：残差直方图
+    axes[4].hist(residuals, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
+    axes[4].axvline(x=residual_mean, color='red', linestyle='--', linewidth=2,
+                    label=f'均值: {residual_mean:.4f}')
+    axes[4].set_xlabel('残差（m）', fontsize=11)
+    axes[4].set_ylabel('频数', fontsize=11)
+    axes[4].set_title('残差分布直方图', fontsize=13, fontweight='bold')
+    axes[4].legend()
+    axes[4].grid(True, alpha=0.3)
+
+    # 子图6：误差分布箱线图
+    error_data = [residuals]
+    bp = axes[5].boxplot(error_data, patch_artist=True, labels=['预测误差'])
+    # 设置箱线图颜色
+    bp['boxes'][0].set_facecolor('lightblue')
+    bp['boxes'][0].set_alpha(0.7)
+    axes[5].set_ylabel('误差值（m）', fontsize=11)
+    axes[5].set_title('预测误差箱线图', fontsize=13, fontweight='bold')
+    axes[5].grid(True, alpha=0.3, axis='y')
+
+    # 添加误差统计到箱线图
+    q1, q3 = np.percentile(residuals, [25, 75])
+    iqr = q3 - q1
+    axes[5].text(0.05, 0.95, f'Q1: {q1:.4f}\nQ3: {q3:.4f}\nIQR: {iqr:.4f}',
+                 transform=axes[5].transAxes, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.suptitle('PSO-SVR波浪预测模型结果综合分析', fontsize=16, fontweight='bold', y=0.98)
+    plt.tight_layout()
+
+    # 保存图像
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(save_dir, f'comprehensive_analysis_{timestamp}.png')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"\n综合分析图已保存到: {save_path}")
+
+    # 显示图形
+    if show_plots:
+        plt.show()
+    else:
+        plt.close()
+
+    return fig
+
+
+# -------------------------- 7. 主流程 --------------------------
 if __name__ == "__main__":
     print("=" * 60)
-    print("PSO-SVR波浪预测模型优化版本")
+    print("PSO-SVR波浪预测模型优化版本 - 带波形图保存功能")
     print("=" * 60)
+
+    # 创建结果保存目录
+    results_dir = "wave_prediction_results"
+    os.makedirs(results_dir, exist_ok=True)
+    print(f"结果将保存到目录: {results_dir}")
 
     # 1. 生成数据（包含特征名称）
     X, y, feature_names = generate_wave_data(n_samples=1000)
@@ -372,25 +681,65 @@ if __name__ == "__main__":
         print(f"RMSE（均方根误差）：{rmse:.4f} m")
         print(f"MAE（平均绝对误差）：{mae:.4f} m")
         print(f"R²（决定系数）：{r2:.4f}")
-        return rmse, mae, r2
+        return {'rmse': rmse, 'mae': mae, 'r2': r2}
 
 
     print("\n" + "=" * 60)
     print("模型性能评估")
     print("=" * 60)
-    evaluate(y_train_true, y_train_pred, "训练")
-    evaluate(y_test_true, y_test_pred, "测试")
+    train_metrics = evaluate(y_train_true, y_train_pred, "训练")
+    test_metrics = evaluate(y_test_true, y_test_pred, "测试")
+
+    # 保存性能指标
+    performance_metrics = {
+        'train': train_metrics,
+        'test': test_metrics
+    }
 
     # 8. 特征重要性分析
-    importance_scores = analyze_feature_importance(svr_model, X_test, y_test, feature_names)
+    importance_scores = analyze_feature_importance(svr_model, X_test, y_test,
+                                                   feature_names, save_dir=results_dir)
 
-    # 9. 保存模型
+    # 9. 波形图可视化与保存
+    print("\n" + "=" * 60)
+    print("生成波浪预测波形图")
+    print("=" * 60)
+
+    # 生成并保存波形图
+    wave_fig = visualize_wave_predictions(
+        y_test_true,
+        y_test_pred,
+        save_dir=results_dir,
+        title="PSO-SVR波浪预测波形对比",
+        sample_size=200,
+        show_waveform=True
+    )
+
+    # 可选：生成波形动画（如果需要）
+    # create_waveform_animation(y_test_true[:100], y_test_pred[:100], save_dir=results_dir)
+
+    # 10. 综合结果可视化
+    print("\n" + "=" * 60)
+    print("生成综合分析图表")
+    print("=" * 60)
+
+    comprehensive_fig = visualize_results(
+        fitness_history,
+        y_test_true,
+        y_test_pred,
+        pso_svr,
+        save_dir=results_dir,
+        show_plots=True
+    )
+
+    # 11. 保存模型
     print("\n" + "=" * 60)
     print("保存模型和归一化器")
     print("=" * 60)
-    metadata = save_model(svr_model, scaler_X, scaler_y, best_params, feature_names)
+    metadata = save_model(svr_model, scaler_X, scaler_y, best_params,
+                          feature_names, performance_metrics, save_dir='saved_models')
 
-    # 10. 演示模型加载功能
+    # 12. 演示模型加载功能
     print("\n" + "=" * 60)
     print("演示模型加载功能")
     print("=" * 60)
@@ -414,55 +763,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"模型加载演示失败: {e}")
 
-    # 11. 结果可视化
-    plt.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文
-    plt.rcParams['axes.unicode_minus'] = False  # 支持负号
-    fig, axes = plt.subplots(3, 1, figsize=(14, 15))
-
-    # 子图1：PSO适应度收敛曲线
-    axes[0].plot(fitness_history, label='全局最优RMSE', color='blue', linewidth=2)
-    axes[0].axvline(x=pso_svr.best_iteration, color='red', linestyle='--',
-                    label=f'最佳迭代 ({pso_svr.best_iteration + 1})', alpha=0.7)
-    axes[0].set_xlabel('迭代次数')
-    axes[0].set_ylabel('RMSE（m）')
-    axes[0].set_title('PSO优化收敛曲线（带早停机制）')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    # 子图2：测试集真实值vs预测值
-    t = np.arange(len(y_test_true))
-    axes[1].plot(t, y_test_true, label='真实有效波高', color='green', linewidth=2)
-    axes[1].plot(t, y_test_pred, label='预测有效波高', color='red', linewidth=2, linestyle='--')
-    axes[1].set_xlabel('测试样本序号')
-    axes[1].set_ylabel('有效波高（m）')
-    axes[1].set_title('测试集真实值与预测值对比')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    # 子图3：残差分析
-    residuals = y_test_true - y_test_pred
-    axes[2].scatter(y_test_pred, residuals, alpha=0.6, color='purple')
-    axes[2].axhline(y=0, color='red', linestyle='--', alpha=0.7)
-    axes[2].set_xlabel('预测值（m）')
-    axes[2].set_ylabel('残差（真实值-预测值）')
-    axes[2].set_title('残差分析图')
-    axes[2].grid(True, alpha=0.3)
-
-    # 添加残差统计信息
-    residual_mean = np.mean(residuals)
-    residual_std = np.std(residuals)
-    axes[2].text(0.05, 0.95, f'残差均值: {residual_mean:.4f}\n残差标准差: {residual_std:.4f}',
-                 transform=axes[2].transAxes, verticalalignment='top',
-                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
-    plt.tight_layout()
-    plt.show()
-
+    # 13. 生成最终报告
     print("\n" + "=" * 60)
     print("优化总结")
     print("=" * 60)
-    print("1. 时间序列交叉验证：在PSO适应度函数中使用TimeSeriesSplit")
-    print("2. 特征重要性分析：使用排列特征重要性方法")
-    print(f"3. 早停机制：当连续{pso_svr.patience}代无改进时停止")
-    print(f"4. 模型保存：模型和相关文件保存在'saved_models'目录")
+    print(f"1. 模型性能: 测试集R² = {test_metrics['r2']:.4f}, RMSE = {test_metrics['rmse']:.4f}m")
+    print(f"2. 特征重要性: 最重要的特征是'{importance_scores[0][0]}'")
+    print(f"3. 波形图已保存到: {results_dir}/ 目录")
+    print(f"4. 模型文件已保存到: saved_models/ 目录")
+    print(f"5. 早停机制: 当连续{pso_svr.patience}代无改进时停止，实际迭代{pso_svr.best_iteration + 1}次")
     print("=" * 60)
